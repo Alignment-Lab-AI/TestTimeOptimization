@@ -33,6 +33,6 @@ Please make sure your GPUs can support these libraries. I'll add alternative nat
 - [ ] [**Test-Time Training Done Right**](https://arxiv.org/abs/2505.23884)
 - [ ] [**ATLAS: Learning to Optimally Memorize the Context at Test Time**](https://arxiv.org/abs/2505.23735)
 - [ ] [**TNT: Improving Chunkwise Training For Test-Time Memorization**](https://arxiv.org/abs/2511.07343)
-- [ ] [**ViT³: Unlocking Test-Time Training in Vision](https://arxiv.org/abs/2512.01643)
+- [ ] [**ViT³: Unlocking Test-Time Training in Vision**](https://arxiv.org/abs/2512.01643)
 
 Will add more papers as I find them.
