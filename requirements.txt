@@ -1,0 +1,8 @@
+accelerate
+accelerated-scan
+causal-conv1d
+datasets
+liger-kernel
+transformers
+torch>=2.6.0
+wandb
