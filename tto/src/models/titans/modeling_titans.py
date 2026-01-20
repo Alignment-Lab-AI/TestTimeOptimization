@@ -37,6 +37,8 @@ except ImportError:
 
 from .configuration_titans import TitansConfig
 
+logger = logging.get_logger(__name__)
+
 class TitansRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -131,12 +133,6 @@ def silu_backward(x):
     sig = torch.sigmoid(x)
     return sig + (F.silu(x) * (1.0 - sig))
 
-# Modified from https://github.com/NVIDIA/Megatron-LM/blob/e33c8f78a35765d5aa37475a144da60e8a2349d1/megatron/core/fusions/fused_bias_gelu.py#L26
-def gelu_bwd(x):
-    tanh_out = torch.tanh(0.79788456 * x * (1 + 0.044715 * x * x))
-    ff = 0.5 * x * ((1 - tanh_out * tanh_out) * (0.79788456 + 0.1070322243 * x * x)) + 0.5 * (1 + tanh_out)
-    return ff
-
 def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
@@ -192,8 +188,8 @@ def eager_attention_forward(
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
 
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = F.dropout(attn_weights, p=dropout, training=module.training)
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
 
@@ -209,13 +205,11 @@ def parallel_scan(
     Note that recurrence is computed with an initial value belonging to the previous chunk,
     necessitating supplying that too.
     """
-    # NOTE(TG): Would associative scan be faster if I did the first step outside the scan
-    # because then the fed in seq_len would be a clean power of 2? Might be negligible.
     batch_size, num_heads, seq_len, dim1_size, dim2_size = values.shape
     # The third-party scan implementation does not allow specifying an initial value (default 0),
     # so we do the first step of the recurrence manually here.
     init_value = init_value.unsqueeze(2)  # [batch_size, num_heads, 1, dim1_size, dim2_size]
-    decays = decays[..., None, None].expand_as(values)
+    decays = decays.expand_as(values)
     modified_first_term = (decays[:, :, 0:1] * init_value) + values[:, :, 0:1]
     values_new = torch.cat([modified_first_term, values[:, :, 1:]], dim=2)
 
@@ -378,12 +372,13 @@ class TitansMemoryModule(nn.Module):
         """
         Resets the memory module parameters to initial states.
         """
-        weight_shape = (batch_size, *self.W1.shape)
+        new_W1_shape = (batch_size, *self.W1.shape)
+        new_W2_shape = (batch_size, *self.W2.shape)
         self.params_dict = {
-            "W1": self.W1.unsqueeze(0).expand(weight_shape),
-            "W2": self.W2.unsqueeze(0).expand(weight_shape),
-            "W1_surprise": torch.zeros(weight_shape, device=self.W1.device, dtype=self.W1.dtype),
-            "W2_surprise": torch.zeros(weight_shape, device=self.W2.device, dtype=self.W2.dtype),
+            "W1": self.W1.unsqueeze(0).expand(*new_W1_shape),
+            "W2": self.W2.unsqueeze(0).expand(*new_W2_shape),
+            "W1_surprise": torch.zeros(new_W1_shape, device=self.W1.device, dtype=self.W1.dtype),
+            "W2_surprise": torch.zeros(new_W2_shape, device=self.W2.device, dtype=self.W2.dtype),
         }
 
     def retrieve(self, query_states: torch.Tensor) -> torch.Tensor:
@@ -411,10 +406,11 @@ class TitansMemoryModule(nn.Module):
         W1_surprise = self.params_dict["W1_surprise"]
         W2_surprise = self.params_dict["W2_surprise"]
 
-        # Get decays and LR
-        mem_decay = 1.0 - torch.sigmoid(self.mem_decay_proj(hidden_states)).transpose(-2, -1) # Eq.13
-        surprise_decay = torch.sigmoid(self.surprise_decay_proj(hidden_states)).transpose(-2, -1) # [batch, num_heads, seq_len]
-        lr = torch.sigmoid(self.lr_proj(hidden_states)).transpose(-2, -1)[..., None, None] # [batch, num_heads, seq_len, 1, 1]
+        # Get decays (1 - alpha in Titans paper) and LR
+        # Shape shift: [batch_size, seq_len, num_heads] -> [batch_size, num_heads, seq_len, 1, 1]
+        mem_decay = 1.0 - torch.sigmoid(self.mem_decay_proj(hidden_states)).transpose(-2, -1)[..., None, None]
+        surprise_decay = torch.sigmoid(self.surprise_decay_proj(hidden_states)).transpose(-2, -1)[..., None, None]
+        lr = torch.sigmoid(self.lr_proj(hidden_states)).transpose(-2, -1)[..., None, None]
 
         # Keys fed through memory module
         # Pass through memory MLP

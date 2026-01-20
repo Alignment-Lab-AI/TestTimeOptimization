@@ -60,6 +60,9 @@ class TitansConfig(PretrainedConfig):
         num_persistent_mem_tokens: int = 4,
         **kwargs,
     ):
+        if variant != "lmm":
+            raise NotImplementedError(f"Currently only 'lmm' variant is supported, got {variant}.")
+        
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
